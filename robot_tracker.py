@@ -4,7 +4,7 @@ import threading
 from pyapriltags import Detector
 
 class ELPCameraStream:
-    def __init__(self, src=0, exposure_val=-7):
+    def __init__(self, src=1, exposure_val=-7):
         # Initialize video capture (Use cv2.CAP_V4L2 on Linux)
         self.stream = cv2.VideoCapture(src, cv2.CAP_DSHOW) 
         
@@ -88,7 +88,7 @@ class AprilTagPipeline:
 
 # --- Main Thread Execution ---
 # Start hardware camera thread
-cam = ELPCameraStream(src=0, exposure_val=-7).start()
+cam = ELPCameraStream(src=1, exposure_val=-7).start()
 time.sleep(1.0) 
 
 # Start vision pipeline thread (default family: tag36h11)
