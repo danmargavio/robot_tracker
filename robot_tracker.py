@@ -49,9 +49,11 @@ class ELPCameraStream:
         if self.exposure_val is not None:
             self.stream.set(cv2.CAP_PROP_EXPOSURE, self.exposure_val)
 
+        opened = self.stream.isOpened()
         self.grabbed, self.frame = self.stream.read()
         self.connection_state = bool(self.grabbed)
         self.last_error = None if self.grabbed else "Initial frame capture failed"
+        print(f"[Camera] open_camera src={self.src} opened={opened} grabbed={self.grabbed} frame_shape={None if self.frame is None else self.frame.shape} last_error={self.last_error}")
         return self.grabbed
 
     def start(self):
@@ -322,7 +324,7 @@ class AprilTagPipeline:
 
 # --- Main Thread Execution ---
 # Start hardware camera thread
-cam = ELPCameraStream(src=1, exposure_val=-7).start()
+cam = ELPCameraStream(src=1, exposure_val=2).start()
 time.sleep(1.0) 
 
 # NetworkTables configuration
@@ -358,13 +360,16 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
         cv2.putText(reconnect_frame, "Press 'q' to quit.", (40, 140),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        cv2.imshow("ELP High Speed AprilTag", reconnect_frame)
+        cv2.imshow("ELP High Speed AprilTag Visualizer", reconnect_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
         continue
-        
+
+    if frame_count % 30 == 0:
+        print("[Main] frame ok", frame.shape, frame.dtype, np.mean(frame), np.std(frame))
+
     frame_count += 1
-    
+
     # 1. Send the frame to the background detector thread
     pipeline.submit_frame(frame)
     
@@ -438,7 +443,7 @@ while True:
         frame_count = 0
         prev_time = curr_time
 
-    cv2.imshow("ELP High Speed AprilTag", frame)
+    cv2.imshow("ELP High Speed AprilTag Visualizer", frame)
     
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
