@@ -267,7 +267,7 @@ class NetworkTablesTrigger:
         return self.table.getBoolean(self.key_name, False)
 
 class AprilTagPipeline:
-    def __init__(self, tag_family="tag36h11", estimate_pose=False, camera_params=None, tag_size=0.16):
+    def __init__(self, tag_family="tag16h5", estimate_pose=False, camera_params=None, tag_size=0.7):
         self.detector = Detector(families=tag_family)
         self.estimate_pose = estimate_pose
         self.camera_params = camera_params

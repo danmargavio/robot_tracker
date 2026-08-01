@@ -1,8 +1,8 @@
 To configure the camera node OS to execute, monitor, and manage the script, perform the following on each node:
 1. Download all required modules
-    a. python -m pip install systemd asyncio opencv2-python threading numpy pyapriltags networktables
+    a. python -m pip install systemd asyncio opencv2-python threading numpy pyapriltags networktables --break
 2. Copy robot_tracker.py to /home/camera_node/
-3. Create a service file at /etc/systemd/system/camera_node.service with root permissions
+3. Create a service file at /etc/systemd/system/camera_node.service with root permissions; i.e. sudo nano camera_node.service
 4. Add the following configuration details to camera_node.service:
     [Unit]
     Description=Camera Node Script with Watchdog
