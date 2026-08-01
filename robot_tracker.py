@@ -1,3 +1,5 @@
+import systemd.daemon
+import asyncio
 import cv2
 import os
 import time
@@ -135,7 +137,6 @@ class ELPCameraStream:
         if self.stream is not None:
             self.stream.release()
 
-
 class NetworkTablesPublisher:
     def __init__(self, server="127.0.0.1", table_name="AprilTag"):
         self.enabled = NT_AVAILABLE
@@ -187,7 +188,6 @@ class NetworkTablesPublisher:
 
         self.table.putBoolean("camera_recording", bool(camera_stats.get("camera_recording", False)))
         self.table.putNumber("camera_recording_seconds_remaining", float(camera_stats.get("camera_recording_seconds_remaining", 0.0)))
-
 
 class VideoRecorder:
     def __init__(self, output_dir="recordings", duration_seconds=180, codec="MJPG", fps=30):
@@ -247,7 +247,6 @@ class VideoRecorder:
         remaining = max(0.0, self.duration_seconds - elapsed)
         return {"camera_recording": True, "camera_recording_seconds_remaining": remaining}
 
-
 class NetworkTablesTrigger:
     def __init__(self, server="127.0.0.1", table_name="RoboRIO", key_name="matchStart"):
         self.enabled = NT_AVAILABLE
@@ -266,7 +265,6 @@ class NetworkTablesTrigger:
         if not self.enabled or self.table is None:
             return False
         return self.table.getBoolean(self.key_name, False)
-
 
 class AprilTagPipeline:
     def __init__(self, tag_family="tag36h11", estimate_pose=False, camera_params=None, tag_size=0.16):
@@ -321,133 +319,70 @@ class AprilTagPipeline:
     def stop(self):
         self.stopped = True
 
+class RobotTracker:
+    def __init__(self, camera_stream, nt_publisher):
+        self.camera = camera_stream
+        self.publisher = nt_publisher
+        self.detector = Detector(families='tag36h11', nthreads=1) # Adjust family as needed
 
-# --- Main Thread Execution ---
-# Start hardware camera thread
-cam = ELPCameraStream(src=1, exposure_val=2).start()
-time.sleep(1.0) 
-
-# NetworkTables configuration
-nt_server = "127.0.0.1"
-status_table_name = "Camera_Module_1"
-trigger_table_name = "RoboRIO"
-trigger_key_name = "matchStart"
-nt_publisher = NetworkTablesPublisher(server=nt_server, table_name=status_table_name)
-nt_trigger = NetworkTablesTrigger(server=nt_server, table_name=trigger_table_name, key_name=trigger_key_name)
-
-# Video recorder configuration
-record_output_dir = "recordings"
-record_duration_seconds = 180
-record_fps = 30
-recorder = VideoRecorder(output_dir=record_output_dir, duration_seconds=record_duration_seconds, fps=record_fps)
-
-# Start vision pipeline thread (default family: tag36h11)
-pipeline = AprilTagPipeline(tag_family="tag36h11", estimate_pose=False, camera_params=None, tag_size=0.16).start()
-
-cv2.namedWindow("ELP High Speed AprilTag Visualizer")
-
-prev_time = time.time()
-frame_count = 0
-
-while True:
-    frame = cam.read()
-    camera_status = cam.get_status()
-    nt_publisher.publish_camera_stats(camera_status)
-
-    if frame is None:
-        reconnect_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        cv2.putText(reconnect_frame, "Camera disconnected. Reconnecting...", (40, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
-        cv2.putText(reconnect_frame, "Press 'q' to quit.", (40, 140),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        cv2.imshow("ELP High Speed AprilTag Visualizer", reconnect_frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-        continue
-
-    if frame_count % 30 == 0:
-        print("[Main] frame ok", frame.shape, frame.dtype, np.mean(frame), np.std(frame))
-
-    frame_count += 1
-
-    # 1. Send the frame to the background detector thread
-    pipeline.submit_frame(frame)
-    
-    # 2. Get the latest available detections (won't block the loop)
-    detections = pipeline.get_results()
-
-    if nt_trigger.should_start_recording() and not recorder.recording:
-        recorder.start(frame)
-
-    recorder.update(frame)
-
-    camera_status = cam.get_status()
-    camera_status.update(recorder.get_status())
-    nt_publisher.publish_camera_stats(camera_status)
-    
-    # Object collection to store coordinates generated this frame
-    frame_coordinates = []
-
-    # 3. Draw detections overlay and generate coordinate profiles
-    for r in detections:
-        # Extract corner points
-        (ptA, ptB, ptC, ptD) = r.corners
-        ptA = (int(ptA[0]), int(ptA[1]))
-        ptB = (int(ptB[0]), int(ptB[1]))
-        ptC = (int(ptC[0]), int(ptC[1]))
-        ptD = (int(ptD[0]), int(ptD[1]))
+    def process_frame(self):
+        """Processes a single frame. Returns True if progress was made."""
+        frame = self.camera.read()
+        if frame is None:
+            return False
+            
+        # Convert to grayscale for AprilTag detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        tags = self.detector.detect(gray)
         
-        # Center coordinates
-        cX, cY = int(r.center[0]), int(r.center[1])
+        # Process and publish tag data
+        for tag in tags:
+            tag_data = {
+                "tag_id": tag.tag_id,
+                "pose_translation": tag.pose_t.flatten() if tag.pose_t is not None else None,
+                "pose_rotation": tag.pose_R if tag.pose_R is not None else None
+            }
+            self.publisher.publish_tag_pose(tag_data)
+            
+        # Publish health metrics
+        self.publisher.publish_camera_stats(self.camera.get_status())
+        return True
 
-        # --- GENERATE COORDINATE DATA STRUCTURE ---
-        tag_data = {
-            "tag_id": r.tag_id,
-            "center": (cX, cY),
-            "corners": {
-                "top_left": ptA,
-                "top_right": ptB,
-                "bottom_right": ptC,
-                "bottom_left": ptD
-            },
-            # If estimate_tag_pose=True is used in the pipeline, these attributes become available:
-            "pose_translation": r.pose_t.flatten().tolist() if hasattr(r, 'pose_t') and r.pose_t is not None else None,
-            "pose_rotation": r.pose_R.tolist() if hasattr(r, 'pose_R') and r.pose_R is not None else None
-        }
-        frame_coordinates.append(tag_data)
-        nt_publisher.publish_tag_pose(tag_data)
-
-        # Draw bounding box
-        cv2.line(frame, ptA, ptB, (0, 255, 0), 2)
-        cv2.line(frame, ptB, ptC, (0, 255, 0), 2)
-        cv2.line(frame, ptC, ptD, (0, 255, 0), 2)
-        cv2.line(frame, ptD, ptA, (0, 255, 0), 2)
-        
-        # Draw center point and ID text
-        cv2.circle(frame, (cX, cY), 5, (0, 0, 255), -1)
-        cv2.putText(frame, f"ID: {r.tag_id}", (ptA[0], ptA[1] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-    # --- ACTIONABLE STEP FOR COORDINATES ---
-    # Example action: Print the active centers found in the current frame to terminal
-    if frame_coordinates:
-        for tag in frame_coordinates:
-            print(f"[Coordinates] Tag {tag['tag_id']} Center -> X: {tag['center'][0]}, Y: {tag['center'][1]}")
-
-    # Frame Rate Diagnostics
-    curr_time = time.time()
-    elapsed = curr_time - prev_time
-    if elapsed >= 1.0:
-        fps = frame_count / elapsed
-        print(f"Streaming Speed: {fps:.2f} FPS | Tracked Tags: {len(detections)}")
-        frame_count = 0
-        prev_time = curr_time
-
-    cv2.imshow("ELP High Speed AprilTag Visualizer", frame)
+def main():
+    # 1. Initialize hardware and publishers
+    camera = ELPCameraStream(src=1).start()
+    publisher = NetworkTablesPublisher()
+    tracker = RobotTracker(camera, publisher)
     
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    # 2. Signal systemd that initialization is complete
+    systemd.daemon.notify(systemd.daemon.Notification.READY)
+    
+    # 3. Track watchdog intervals
+    WATCHDOG_INTERVAL = 4.0  # Seconds between pings
+    last_ping_time = time.time()
+    
+    print("[Main] System initialized. Entering core tracking loop.")
+    
+    try:
+        while True:
+            # Execute processing step
+            work_done = tracker.process_frame()
+            
+            # 4. Watchdog Logic: Ping ONLY if the loop is healthy and moving
+            current_time = time.time()
+            if current_time - last_ping_time >= WATCHDOG_INTERVAL:
+                # OPTIONAL: Only ping if work_done is True (ensures camera is active)
+                systemd.daemon.notify(systemd.daemon.Notification.WATCHDOG)
+                last_ping_time = current_time
+                
+            # Tiny sleep to save CPU cycles if no frame was ready
+            if not work_done:
+                time.sleep(0.001)
+                
+    except KeyboardInterrupt:
+        print("[Main] Terminating tracker application...")
+    finally:
+        camera.stop()
 
-pipeline.stop()
-cam.stop()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
