@@ -14,6 +14,43 @@ except ImportError:
     NetworkTables = None
     NT_AVAILABLE = False
 
+
+def load_camera_params(npz_path):
+    """Load camera calibration from a .npz file.
+
+    Returns (camera_matrix, dist_coeffs, camera_params_list)
+    where camera_params_list is [fx, fy, cx, cy] suitable for pyapriltags.
+    """
+    with np.load(npz_path, allow_pickle=False) as data:
+        print("[calib] available keys:", data.files)
+        # common key names for camera matrix
+        cam_mat = None
+        for k in ("camera_matrix", "mtx", "K"):
+            if k in data:
+                cam_mat = data[k]
+                break
+        if cam_mat is None:
+            raise KeyError(f"No camera matrix found in {npz_path}; keys={data.files}")
+
+        # common key names for distortion
+        dist = None
+        for k in ("dist_coeffs", "dist", "distortion"):
+            if k in data:
+                dist = data[k]
+                break
+
+        # derive fx,fy,cx,cy from camera matrix if possible
+        try:
+            fx = float(cam_mat[0, 0])
+            fy = float(cam_mat[1, 1])
+            cx = float(cam_mat[0, 2])
+            cy = float(cam_mat[1, 2])
+            cam_params = [fx, fy, cx, cy]
+        except Exception:
+            cam_params = None
+
+        return cam_mat, dist, cam_params
+
 class ELPCameraStream:
     def __init__(self, src=1, exposure_val=-7, max_reconnect_attempts=5, reconnect_delay=2.0):
         self.src = src
@@ -350,6 +387,16 @@ class RobotTracker:
 
 def main():
     # 1. Initialize hardware and publishers
+    # Attempt to load camera calibration (optional)
+    try:
+        K, dist, cam_params = load_camera_params("camera_calibration_20260801_184223.npz")
+        print(f"[Main] Loaded camera calibration; cam_params={cam_params}")
+    except Exception as e:
+        K = None
+        dist = None
+        cam_params = None
+        print(f"[Main] Camera calibration not loaded: {e}")
+
     camera = ELPCameraStream(src=1).start()
     publisher = NetworkTablesPublisher()
     tracker = RobotTracker(camera, publisher)
